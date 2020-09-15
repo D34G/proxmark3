@@ -31,7 +31,7 @@
 bool APDUInFramingEnable = true;
 
 static int CmdHelp(const char *Cmd);
-static int waitCmd(uint8_t iSelect);
+static int waitCmd(uint8_t iSelect, uint32_t timeout);
 
 static const manufactureName manufactureMapping[] = {
     // ID,  "Vendor Country"
@@ -168,6 +168,45 @@ const char *getTagInfo(uint8_t uid) {
 static uint16_t frameLength = 0;
 uint16_t atsFSC[] = {16, 24, 32, 40, 48, 64, 96, 128, 256};
 
+static int usage_hf_14a_config(void) {
+    PrintAndLogEx(NORMAL, "Usage: hf 14a config [a 0|1|2] [b 0|1|2] [2 0|1|2] [3 0|1|2]");
+    PrintAndLogEx(NORMAL, "\nOptions:");
+    PrintAndLogEx(NORMAL, "       h                 This help");
+    PrintAndLogEx(NORMAL, "       a 0|1|2           ATQA<>anticollision: 0=follow standard 1=execute anticol 2=skip anticol");
+    PrintAndLogEx(NORMAL, "       b 0|1|2           BCC:                 0=follow standard 1=use fixed BCC   2=use card BCC");
+    PrintAndLogEx(NORMAL, "       2 0|1|2           SAK<>CL2:            0=follow standard 1=execute CL2     2=skip CL2");
+    PrintAndLogEx(NORMAL, "       3 0|1|2           SAK<>CL3:            0=follow standard 1=execute CL3     2=skip CL3");
+    PrintAndLogEx(NORMAL, "       r 0|1|2           SAK<>ATS:            0=follow standard 1=execute RATS    2=skip RATS");
+    PrintAndLogEx(NORMAL, "\nExamples:");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config       ")"     Print current configuration");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 1   ")"     Force execution of anticollision");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 0   ")"     Restore ATQA interpretation");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config b 1   ")"     Force fix of bad BCC in anticollision");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config b 0   ")"     Restore BCC check");
+    PrintAndLogEx(NORMAL, "\nExamples to revive Gen2/DirectWrite magic cards failing at anticollision:");
+    PrintAndLogEx(NORMAL, _CYAN_("    MFC 1k 4b UID")":");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 1 b 2 2 2 r 2"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf mf wrbl 0 A FFFFFFFFFFFF 11223344440804006263646566676869"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 0 b 0 2 0 r 0"));
+    PrintAndLogEx(NORMAL, _CYAN_("    MFC 4k 4b UID")":");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 1 b 2 2 2 r 2"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf mf wrbl 0 A FFFFFFFFFFFF 11223344441802006263646566676869"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 0 b 0 2 0 r 0"));
+    PrintAndLogEx(NORMAL, _CYAN_("    MFC 1k 7b UID")":");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 1 b 2 2 1 3 2 r 2"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf mf wrbl 0 A FFFFFFFFFFFF 04112233445566084400626364656667"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 0 b 0 2 0 3 0 r 0"));
+    PrintAndLogEx(NORMAL, _CYAN_("    MFC 4k 7b UID")":");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 1 b 2 2 1 3 2 r 2"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf mf wrbl 0 A FFFFFFFFFFFF 04112233445566184200626364656667"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 0 b 0 2 0 3 0 r 0"));
+    PrintAndLogEx(NORMAL, _CYAN_("    MFUL ")"/" _CYAN_(" MFUL EV1 ")"/" _CYAN_(" MFULC")":");
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 1 b 2 2 1 3 2 r 2"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf mfu setuid 04112233445566"));
+    PrintAndLogEx(NORMAL, _YELLOW_("          hf 14a config a 0 b 0 2 0 3 0 r 0"));
+    return PM3_SUCCESS;
+}
+
 static int usage_hf_14a_sim(void) {
 //  PrintAndLogEx(NORMAL, "\n Emulating ISO/IEC 14443 type A tag with 4,7 or 10 byte UID\n");
     PrintAndLogEx(NORMAL, "\n Emulating ISO/IEC 14443 type A tag with 4,7 byte UID\n");
@@ -183,6 +222,7 @@ static int usage_hf_14a_sim(void) {
     PrintAndLogEx(NORMAL, "            7 = AMIIBO (NTAG 215),  pack 0x8080");
     PrintAndLogEx(NORMAL, "            8 = MIFARE Classic 4k");
     PrintAndLogEx(NORMAL, "            9 = FM11RF005SH Shanghai Metro");
+    PrintAndLogEx(NORMAL, "           10 = JCOP 31/41 Rothult");
 //  PrintAndLogEx(NORMAL, "    u     : 4, 7 or 10 byte UID");
     PrintAndLogEx(NORMAL, "    u     : 4, 7 byte UID");
     PrintAndLogEx(NORMAL, "    x     : (Optional) Performs the 'reader attack', nr/ar attack against a reader");
@@ -232,6 +272,162 @@ static int CmdHF14AList(const char *Cmd) {
     (void)Cmd; // Cmd is not used so far
     CmdTraceList("14a");
     return 0;
+}
+
+int hf14a_getconfig(hf14a_config *config) {
+    if (!session.pm3_present) return PM3_ENOTTY;
+
+    if (config == NULL)
+        return PM3_EINVARG;
+
+    clearCommandBuffer();
+
+    SendCommandNG(CMD_HF_ISO14443A_GET_CONFIG, NULL, 0);
+    PacketResponseNG resp;
+    if (!WaitForResponseTimeout(CMD_HF_ISO14443A_GET_CONFIG, &resp, 2000)) {
+        PrintAndLogEx(WARNING, "command execution time out");
+        return PM3_ETIMEOUT;
+    }
+    memcpy(config, resp.data.asBytes, sizeof(hf14a_config));
+    return PM3_SUCCESS;
+}
+
+int hf14a_setconfig(hf14a_config *config) {
+    if (!session.pm3_present) return PM3_ENOTTY;
+
+    clearCommandBuffer();
+    if (config != NULL)
+        SendCommandNG(CMD_HF_ISO14443A_SET_CONFIG, (uint8_t *)config, sizeof(hf14a_config));
+    else
+        SendCommandNG(CMD_HF_ISO14443A_PRINT_CONFIG, NULL, 0);
+
+    return PM3_SUCCESS;
+}
+
+static int CmdHf14AConfig(const char *Cmd) {
+
+    if (!session.pm3_present) return PM3_ENOTTY;
+
+    // if called with no params, just print the device config
+    if (strlen(Cmd) == 0) {
+        return hf14a_setconfig(NULL);
+    }
+
+    hf14a_config config = {
+        .forceanticol = -1,
+        .forcebcc = -1,
+        .forcecl2 = -1,
+        .forcecl3 = -1,
+        .forcerats = -1
+    };
+
+    bool errors = false;
+    uint8_t cmdp = 0;
+    while (param_getchar(Cmd, cmdp) != 0x00 && !errors) {
+        switch (param_getchar(Cmd, cmdp)) {
+            case 'h':
+                return usage_hf_14a_config();
+            case 'a':
+                switch (param_getchar(Cmd, cmdp + 1)) {
+                    case '0':
+                        config.forceanticol = 0;
+                        break;
+                    case '1':
+                        config.forceanticol = 1;
+                        break;
+                    case '2':
+                        config.forceanticol = 2;
+                        break;
+                    default:
+                        PrintAndLogEx(WARNING, "Unknown value '%c'", param_getchar(Cmd, cmdp + 1));
+                        errors = 1;
+                        break;
+                }
+                cmdp += 2;
+                break;
+            case 'b':
+                switch (param_getchar(Cmd, cmdp + 1)) {
+                    case '0':
+                        config.forcebcc = 0;
+                        break;
+                    case '1':
+                        config.forcebcc = 1;
+                        break;
+                    case '2':
+                        config.forcebcc = 2;
+                        break;
+                    default:
+                        PrintAndLogEx(WARNING, "Unknown value '%c'", param_getchar(Cmd, cmdp + 1));
+                        errors = 1;
+                        break;
+                }
+                cmdp += 2;
+                break;
+            case '2':
+                switch (param_getchar(Cmd, cmdp + 1)) {
+                    case '0':
+                        config.forcecl2 = 0;
+                        break;
+                    case '1':
+                        config.forcecl2 = 1;
+                        break;
+                    case '2':
+                        config.forcecl2 = 2;
+                        break;
+                    default:
+                        PrintAndLogEx(WARNING, "Unknown value '%c'", param_getchar(Cmd, cmdp + 1));
+                        errors = 1;
+                        break;
+                }
+                cmdp += 2;
+                break;
+            case '3':
+                switch (param_getchar(Cmd, cmdp + 1)) {
+                    case '0':
+                        config.forcecl3 = 0;
+                        break;
+                    case '1':
+                        config.forcecl3 = 1;
+                        break;
+                    case '2':
+                        config.forcecl3 = 2;
+                        break;
+                    default:
+                        PrintAndLogEx(WARNING, "Unknown value '%c'", param_getchar(Cmd, cmdp + 1));
+                        errors = 1;
+                        break;
+                }
+                cmdp += 2;
+                break;
+            case 'r':
+                switch (param_getchar(Cmd, cmdp + 1)) {
+                    case '0':
+                        config.forcerats = 0;
+                        break;
+                    case '1':
+                        config.forcerats = 1;
+                        break;
+                    case '2':
+                        config.forcerats = 2;
+                        break;
+                    default:
+                        PrintAndLogEx(WARNING, "Unknown value '%c'", param_getchar(Cmd, cmdp + 1));
+                        errors = 1;
+                        break;
+                }
+                cmdp += 2;
+                break;
+            default:
+                PrintAndLogEx(WARNING, "Unknown parameter '%c'", param_getchar(Cmd, cmdp));
+                errors = 1;
+                break;
+        }
+    }
+
+    // validations
+    if (errors) return usage_hf_14a_config();
+
+    return hf14a_setconfig(&config);
 }
 
 int Hf14443_4aGetCardData(iso14a_card_select_t *card) {
@@ -1134,17 +1330,17 @@ static int CmdHF14ACmdRaw(const char *Cmd) {
     if (reply) {
         int res = 0;
         if (active_select)
-            res = waitCmd(1);
+            res = waitCmd(1, timeout);
         if (!res && datalen > 0)
-            waitCmd(0);
+            waitCmd(0, timeout);
     }
     return 0;
 }
 
-static int waitCmd(uint8_t iSelect) {
+static int waitCmd(uint8_t iSelect, uint32_t timeout) {
     PacketResponseNG resp;
 
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 1500)) {
+    if (WaitForResponseTimeout(CMD_ACK, &resp, timeout + 1500)) {
         uint16_t len = (resp.oldarg[0] & 0xFFFF);
         if (iSelect) {
             len = (resp.oldarg[1] & 0xFFFF);
@@ -1241,6 +1437,7 @@ static command_t CommandTable[] = {
     {"chaining",    CmdHF14AChaining,     IfPm3Iso14443a,  "Control ISO 14443-4 input chaining"},
     {"raw",         CmdHF14ACmdRaw,       IfPm3Iso14443a,  "Send raw hex data to tag"},
     {"antifuzz",    CmdHF14AAntiFuzz,     IfPm3Iso14443a,  "Fuzzing the anticollision phase.  Warning! Readers may react strange"},
+    {"config",      CmdHf14AConfig,       IfPm3Iso14443a,  "Configure 14a settings (use with caution)"},
     {NULL, NULL, NULL, NULL}
 };
 
@@ -1487,6 +1684,12 @@ int infoHF14A(bool verbose, bool do_nack_test, bool do_aid_search) {
                     printTag("Infineon MIFARE CLASSIC 1K");
                 }
                 getTagLabel(card.uid[0], card.uid[1]);
+                break;
+            case 0x57: // Qualcomm
+                if (memcmp(card.uid, "WSDZ10m", 7) == 0) {
+                    isMifareClassic = false;
+                    printTag("Waveshare NFC-Powered e-Paper");
+                }
                 break;
             default:
                 getTagLabel(card.uid[0], card.uid[1]);
@@ -1780,23 +1983,28 @@ int infoHF14A(bool verbose, bool do_nack_test, bool do_aid_search) {
         isMagic = detect_classic_magic();
 
         if (isMifareClassic) {
-            int res = detect_classic_prng();
-            if (res == 1)
-                PrintAndLogEx(SUCCESS, "Prng detection: " _GREEN_("weak"));
-            else if (res == 0)
-                PrintAndLogEx(SUCCESS, "Prng detection: " _YELLOW_("hard"));
-            else
-                PrintAndLogEx(FAILED, "Prng detection:  " _RED_("fail"));
 
-            if (do_nack_test)
-                detect_classic_nackbug(false);
-
-            res = detect_classic_static_nonce();
-            if (res == 1)
+            int res = detect_classic_static_nonce();
+            if (res == NONCE_STATIC)
                 PrintAndLogEx(SUCCESS, "Static nonce: " _YELLOW_("yes"));
-            if (res == 2 && verbose)
-                PrintAndLogEx(SUCCESS, "Static nonce:  " _RED_("fail"));
 
+            if (res == NONCE_FAIL && verbose)
+                PrintAndLogEx(SUCCESS, "Static nonce:  " _RED_("read failed"));
+
+            if (res == NONCE_NORMAL) {
+
+                // not static
+                res = detect_classic_prng();
+                if (res == 1)
+                    PrintAndLogEx(SUCCESS, "Prng detection: " _GREEN_("weak"));
+                else if (res == 0)
+                    PrintAndLogEx(SUCCESS, "Prng detection: " _YELLOW_("hard"));
+                else
+                    PrintAndLogEx(FAILED, "Prng detection:  " _RED_("fail"));
+
+                if (do_nack_test)
+                    detect_classic_nackbug(false);
+            }
         }
     }
 

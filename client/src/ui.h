@@ -22,7 +22,6 @@ extern "C" {
 #define _USE_MATH_DEFINES
 
 typedef enum logLevel {NORMAL, SUCCESS, INFO, FAILED, WARNING, ERR, DEBUG, INPLACE, HINT} logLevel_t;
-#define NOLF "\xff"
 typedef enum emojiMode {ALIAS, EMOJI, ALTTEXT, ERASE} emojiMode_t;
 typedef enum clientdebugLevel {cdbOFF, cdbSIMPLE, cdbFULL} clientdebugLevel_t;
 // typedef enum devicedebugLevel {ddbOFF, ddbERROR, ddbINFO, ddbDEBUG, ddbEXTENDED} devicedebugLevel_t;
@@ -54,6 +53,7 @@ extern bool showDemod;
 #endif
 #define MAX_PRINT_BUFFER 2048
 
+#define PROMPT_CLEARLINE PrintAndLogEx(INPLACE, "                                          \r")
 void PrintAndLogOptions(const char *str[][2], size_t size, size_t space);
 void PrintAndLogEx(logLevel_t level, const char *fmt, ...);
 void SetFlushAfterWrite(bool value);

@@ -35,6 +35,8 @@
 #include "cmdhfthinfilm.h"  // Thinfilm
 #include "cmdhflto.h"       // LTO-CM
 #include "cmdhfcryptorf.h"  // CryptoRF
+#include "cmdhfst.h"        // ST rothult
+#include "cmdhfwaveshare.h" // Waveshare
 #include "cmdtrace.h"       // trace list
 #include "ui.h"
 #include "proxgui.h"
@@ -83,8 +85,6 @@ static int usage_hf_tune(void) {
     PrintAndLogEx(NORMAL, "");
     return PM3_SUCCESS;
 }
-
-#define PROMPT_CLEARLINE PrintAndLogEx(INPLACE, "                                          ")
 
 int CmdHFSearch(const char *Cmd) {
 
@@ -166,16 +166,16 @@ int CmdHFSearch(const char *Cmd) {
         }
     }
 
-/*
-    PROMPT_CLEARLINE;
-    PrintAndLogEx(INPLACE, " Searching for FeliCa tag...");
-    if (IfPm3Felica()) {
-        if (readFelicaUid(false) == PM3_SUCCESS) {
-            PrintAndLogEx(NORMAL, "\nValid " _GREEN_("ISO18092 / FeliCa tag") " found\n");
-            res = PM3_SUCCESS;
+    /*
+        PROMPT_CLEARLINE;
+        PrintAndLogEx(INPLACE, " Searching for FeliCa tag...");
+        if (IfPm3Felica()) {
+            if (readFelicaUid(false) == PM3_SUCCESS) {
+                PrintAndLogEx(NORMAL, "\nValid " _GREEN_("ISO18092 / FeliCa tag") " found\n");
+                res = PM3_SUCCESS;
+            }
         }
-    }
-*/
+    */
     /*
         PROMPT_CLEARLINE;
         PrintAndLogEx(INPLACE, " Searching for CryptoRF tag...");
@@ -190,10 +190,10 @@ int CmdHFSearch(const char *Cmd) {
     PROMPT_CLEARLINE;
     if (res != PM3_SUCCESS) {
 
-        PrintAndLogEx(INPLACE, _RED_("No known/supported 13.56 MHz tags found"));
+        PrintAndLogEx(WARNING, _RED_("No known/supported 13.56 MHz tags found"));
         res = PM3_ESOFT;
     }
-    printf("\n");
+
     return res;
 }
 
@@ -365,8 +365,10 @@ static command_t CommandTable[] = {
     {"mfp",         CmdHFMFP,         AlwaysAvailable, "{ MIFARE Plus RFIDs...             }"},
     {"mfu",         CmdHFMFUltra,     AlwaysAvailable, "{ MIFARE Ultralight RFIDs...       }"},
     {"mfdes",       CmdHFMFDes,       AlwaysAvailable, "{ MIFARE Desfire RFIDs...          }"},
+    {"st",          CmdHF_ST,         AlwaysAvailable, "{ ST Rothult RFIDs...              }"},
     {"thinfilm",    CmdHFThinfilm,    AlwaysAvailable, "{ Thinfilm RFIDs...                }"},
     {"topaz",       CmdHFTopaz,       AlwaysAvailable, "{ TOPAZ (NFC Type 1) RFIDs...      }"},
+    {"waveshare",   CmdHFWaveshare,   AlwaysAvailable, "{ Waveshare NFC ePaper...          }"},
     {"list",        CmdTraceList,     AlwaysAvailable,    "List protocol data in trace buffer"},
     {"plot",        CmdHFPlot,        IfPm3Hfplot,     "Plot signal"},
     {"tune",        CmdHFTune,        IfPm3Present,    "Continuously measure HF antenna tuning"},

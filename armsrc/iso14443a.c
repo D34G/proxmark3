@@ -122,6 +122,51 @@ static uint32_t LastProxToAirDuration;
 #define SEC_Y 0x00
 #define SEC_Z 0xc0
 
+/*
+Default HF 14a config is set to:
+    forceanticol = 0 (auto)
+    forcebcc = 0 (expect valid BCC)
+    forcecl2 = 0 (auto)
+    forcecl3 = 0 (auto)
+    forcerats = 0 (auto)
+*/
+static hf14a_config hf14aconfig = { 0, 0, 0, 0, 0 } ;
+
+void printHf14aConfig(void) {
+    DbpString(_CYAN_("HF 14a config"));
+    Dbprintf("[a] Anticol override......%i: %s%s%s", hf14aconfig.forceanticol, (hf14aconfig.forceanticol == 0) ? _GREEN_("No") " (follow standard)" : "", (hf14aconfig.forceanticol == 1) ? _RED_("Yes: Always do anticol") : "", (hf14aconfig.forceanticol == 2) ? _RED_("Yes: Always skip anticol") : "");
+    Dbprintf("[b] BCC override..........%i: %s%s%s", hf14aconfig.forcebcc, (hf14aconfig.forcebcc == 0) ? _GREEN_("No") " (follow standard)" : "", (hf14aconfig.forcebcc == 1) ? _RED_("Yes: Always do CL2") : "", (hf14aconfig.forcebcc == 2) ? _RED_("Yes: Always use card BCC") : "");
+    Dbprintf("[2] CL2 override..........%i: %s%s%s", hf14aconfig.forcecl2, (hf14aconfig.forcecl2 == 0) ? _GREEN_("No") " (follow standard)" : "", (hf14aconfig.forcecl2 == 1) ? _RED_("Yes: Always do CL2") : "", (hf14aconfig.forcecl2 == 2) ? _RED_("Yes: Always skip CL2") : "");
+    Dbprintf("[3] CL3 override..........%i: %s%s%s", hf14aconfig.forcecl3, (hf14aconfig.forcecl3 == 0) ? _GREEN_("No") " (follow standard)" : "", (hf14aconfig.forcecl3 == 1) ? _RED_("Yes: Always do CL3") : "", (hf14aconfig.forcecl3 == 2) ? _RED_("Yes: Always skip CL3") : "");
+    Dbprintf("[r] RATS override.........%i: %s%s%s", hf14aconfig.forcerats, (hf14aconfig.forcerats == 0) ? _GREEN_("No") " (follow standard)" : "", (hf14aconfig.forcerats == 1) ? _RED_("Yes: Always do RATS") : "", (hf14aconfig.forcerats == 2) ? _RED_("Yes: Always skip RATS") : "");
+}
+
+/**
+ * Called from the USB-handler to set the 14a configuration
+ * The 14a config is used for card selection sequence.
+ *
+ * Values set to '-1' implies no change
+ * @brief setSamplingConfig
+ * @param sc
+ */
+void setHf14aConfig(hf14a_config *hc) {
+
+    if ((hc->forceanticol >= 0) && (hc->forceanticol <= 2))
+        hf14aconfig.forceanticol = hc->forceanticol;
+    if ((hc->forcebcc >= 0) && (hc->forcebcc <= 2))
+        hf14aconfig.forcebcc = hc->forcebcc;
+    if ((hc->forcecl2 >= 0) && (hc->forcecl2 <= 2))
+        hf14aconfig.forcecl2 = hc->forcecl2;
+    if ((hc->forcecl3 >= 0) && (hc->forcecl3 <= 2))
+        hf14aconfig.forcecl3 = hc->forcecl3;
+    if ((hc->forcerats >= 0) && (hc->forcerats <= 2))
+        hf14aconfig.forcerats = hc->forcerats;
+}
+
+hf14a_config *getHf14aConfig(void) {
+    return &hf14aconfig;
+}
+
 void iso14a_set_trigger(bool enable) {
     g_trigger = enable;
 }
@@ -854,13 +899,15 @@ bool GetIso14443aCommandFromReader(uint8_t *received, uint8_t *par, int *len) {
     uint16_t check = 0;
 
     for (;;) {
-        if (check == 1000) {
-            if (BUTTON_PRESS() || data_available())
+        if (check == 4000) {
+//            if (BUTTON_PRESS() || data_available())
+            if (BUTTON_PRESS())
                 return false;
+
             check = 0;
+            WDT_HIT();
         }
         ++check;
-        WDT_HIT();
 
         if (AT91C_BASE_SSC->SSC_SR & (AT91C_SSC_RXRDY)) {
             b = (uint8_t)AT91C_BASE_SSC->SSC_RHR;
@@ -936,11 +983,15 @@ bool SimulateIso14443aInit(int tagType, int flags, uint8_t *data, tag_response_i
     // Prepare the optional second SAK (for 7 byte UID), drop the cascade bit
     static uint8_t rSAKc2[3]  = { 0x00 };
     // dummy ATS (pseudo-ATR), answer to RATS
-    static uint8_t rRATS[] = { 0x04, 0x58, 0x80, 0x02, 0x00, 0x00 };
+//    static uint8_t rRATS[] = { 0x04, 0x58, 0x80, 0x02, 0x00, 0x00 };
+    static uint8_t rRATS[] = { 0x05, 0x75, 0x80, 0x60, 0x02, 0x00, 0x00 };
+
     // GET_VERSION response for EV1/NTAG
     static uint8_t rVERSION[10] = { 0x00 };
     // READ_SIG response for EV1/NTAG
     static uint8_t rSIGN[34] = { 0x00 };
+    // PPS respoonse
+    static uint8_t rPPS[3] = { 0xD0 };
 
     switch (tagType) {
         case 1: { // MIFARE Classic 1k
@@ -1014,12 +1065,19 @@ bool SimulateIso14443aInit(int tagType, int flags, uint8_t *data, tag_response_i
             sak = 0x18;
         }
         break;
-        case 9 : { // FM11RF005SH (Shanghai Metro)
+        case 9: { // FM11RF005SH (Shanghai Metro)
             rATQA[0] = 0x03;
             rATQA[1] = 0x00;
             sak = 0x0A;
         }
         break;
+        case 10: { // JCOP31/41 Rothult
+            rATQA[0] = 0x42;
+            rATQA[1] = 0x00;
+            sak = 0x00;
+        }
+        break;
+
         default: {
             if (DBGLEVEL >= DBG_ERROR) Dbprintf("Error: unknown tagtype (%d)", tagType);
             return false;
@@ -1070,13 +1128,20 @@ bool SimulateIso14443aInit(int tagType, int flags, uint8_t *data, tag_response_i
         return false;
     }
 
-    // Calculate the BitCountCheck (BCC) for the first 4 bytes of the UID.
+    // Calculate BCC for the first 4 bytes of the UID.
     rUIDc1[4] = rUIDc1[0] ^ rUIDc1[1] ^ rUIDc1[2] ^ rUIDc1[3];
 
-    rSAKc1[0] = sak;
-    AddCrc14A(rSAKc1, sizeof(rSAKc1) - 2);
 
-    rSAKc2[0] = sak & 0xFB;
+    if (tagType == 10) {
+        rSAKc1[0] = 0x04;
+        rSAKc2[0] = 0x20;
+    } else {
+        rSAKc1[0] = sak;
+        rSAKc2[0] = sak & 0xFB;
+    }
+
+    // crc
+    AddCrc14A(rSAKc1, sizeof(rSAKc1) - 2);
     AddCrc14A(rSAKc2, sizeof(rSAKc2) - 2);
 
     // Format byte = 0x58: FSCI=0x08 (FSC=256), TA(1) and TC(1) present,
@@ -1085,22 +1150,26 @@ bool SimulateIso14443aInit(int tagType, int flags, uint8_t *data, tag_response_i
     // TC(1) = 0x02: CID supported, NAD not supported
     AddCrc14A(rRATS, sizeof(rRATS) - 2);
 
-#define TAG_RESPONSE_COUNT 8
+    AddCrc14A(rPPS, sizeof(rPPS) - 2);
+
+#define TAG_RESPONSE_COUNT 9
     static tag_response_info_t responses_init[TAG_RESPONSE_COUNT] = {
-        { .response = rATQA,      .response_n = sizeof(rATQA)      },  // Answer to request - respond with card type
-        { .response = rUIDc1,     .response_n = sizeof(rUIDc1)     },  // Anticollision cascade1 - respond with uid
-        { .response = rUIDc2,     .response_n = sizeof(rUIDc2)     },  // Anticollision cascade2 - respond with 2nd half of uid if asked
-        { .response = rSAKc1,     .response_n = sizeof(rSAKc1)     },  // Acknowledge select - cascade 1
-        { .response = rSAKc2,     .response_n = sizeof(rSAKc2)     },  // Acknowledge select - cascade 2
-        { .response = rRATS,      .response_n = sizeof(rRATS)      },  // dummy ATS (pseudo-ATR), answer to RATS
-        { .response = rVERSION,   .response_n = sizeof(rVERSION)   },  // EV1/NTAG GET_VERSION response
-        { .response = rSIGN,      .response_n = sizeof(rSIGN)      }   // EV1/NTAG READ_SIG response
+        { .response = rATQA,      .response_n = sizeof(rATQA)     },  // Answer to request - respond with card type
+        { .response = rUIDc1,     .response_n = sizeof(rUIDc1)    },  // Anticollision cascade1 - respond with uid
+        { .response = rUIDc2,     .response_n = sizeof(rUIDc2)    },  // Anticollision cascade2 - respond with 2nd half of uid if asked
+        { .response = rSAKc1,     .response_n = sizeof(rSAKc1)    },  // Acknowledge select - cascade 1
+        { .response = rSAKc2,     .response_n = sizeof(rSAKc2)    },  // Acknowledge select - cascade 2
+        { .response = rRATS,      .response_n = sizeof(rRATS)     },  // dummy ATS (pseudo-ATR), answer to RATS
+        { .response = rVERSION,   .response_n = sizeof(rVERSION)  },  // EV1/NTAG GET_VERSION response
+        { .response = rSIGN,      .response_n = sizeof(rSIGN)     },  // EV1/NTAG READ_SIG response
+        { .response = rPPS,       .response_n = sizeof(rPPS)      }   // PPS response
     };
 
-    // "precompile" responses. There are 8 predefined responses with a total of 68 bytes data to transmit.
+    // "precompile" responses. There are 9 predefined responses with a total of 72 bytes data to transmit.
     // Coded responses need one byte per bit to transfer (data, parity, start, stop, correction)
-    // 68 * 8 data bits, 68 * 1 parity bits, 8 start bits, 8 stop bits, 8 correction bits -- 636 bytes buffer
-#define ALLOCATED_TAG_MODULATION_BUFFER_SIZE 636
+    // 72 * 8 data bits, 72 * 1 parity bits, 9 start bits, 9 stop bits, 9 correction bits -- 677 bytes buffer
+#define ALLOCATED_TAG_MODULATION_BUFFER_SIZE 675
+// 576 + 72 + 9 + 9 + 9 == 675
 
     uint8_t *free_buffer = BigBuf_malloc(ALLOCATED_TAG_MODULATION_BUFFER_SIZE);
     // modulation buffer pointer and current buffer free space size
@@ -1128,7 +1197,7 @@ bool SimulateIso14443aInit(int tagType, int flags, uint8_t *data, tag_response_i
 #define RATS      5
 #define VERSION   6
 #define SIGNATURE 7
-
+#define PPS       8
     return true;
 }
 
@@ -1187,6 +1256,8 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
     // We need to listen to the high-frequency, peak-detected path.
     iso14443a_setup(FPGA_HF_ISO14443A_TAGSIM_LISTEN);
 
+    iso14a_set_timeout(201400); // 106 * 19ms default
+
     int len = 0;
 
     // To control where we are in the protocol
@@ -1201,8 +1272,8 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
 #define ORDER_SELECT_CL2     30
 #define ORDER_EV1_COMP_WRITE 40
 #define ORDER_RATS           70
-    uint8_t order = ORDER_NONE;
 
+    uint8_t order = ORDER_NONE;
     int retval = PM3_SUCCESS;
 
     // Just to allow some checks
@@ -1213,27 +1284,26 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
     // compatible write block number
     uint8_t wrblock = 0;
 
+    bool odd_reply = true;
+
     clear_trace();
     set_tracing(true);
     LED_A_ON();
+
+    // main loop
     for (;;) {
         WDT_HIT();
 
+        tag_response_info_t *p_response = NULL;
+
         // Clean receive command buffer
-        if (!GetIso14443aCommandFromReader(receivedCmd, receivedCmdPar, &len)) {
-            Dbprintf("Emulator stopped.  Trace length: %d ", BigBuf_get_traceLen());
+        if (GetIso14443aCommandFromReader(receivedCmd, receivedCmdPar, &len) == false) {
+            Dbprintf("Emulator stopped. Trace length: %d ", BigBuf_get_traceLen());
             retval = PM3_EOPABORTED;
             break;
         }
-        tag_response_info_t *p_response = NULL;
 
-        // Okay, look at the command now.
-        int lastorder = order;
-
-        //
         // we need to check "ordered" states before, because received data may be same to any command - is wrong!!!
-        //
-
         if (order == ORDER_EV1_COMP_WRITE && len == 18) {
             // MIFARE_ULC_COMP_WRITE part 2
             // 16 bytes data + 2 bytes crc, only least significant 4 bytes are written
@@ -1316,28 +1386,22 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
             order = ORDER_NONE; // back to work state
             p_response = NULL;
 
-            //
-            // now check commands in received buffer
-            //
-
-        } else if (receivedCmd[0] == ISO14443A_CMD_REQA && len == 1) { // Received a REQUEST
-            p_response = &responses[ATQA];
-            order = ORDER_REQA;
+        } else if (receivedCmd[0] == ISO14443A_CMD_REQA && len == 1) { // Received a REQUEST, but in HALTED, skip
+            odd_reply = !odd_reply;
+            if (odd_reply)
+                p_response = &responses[ATQA];
         } else if (receivedCmd[0] == ISO14443A_CMD_WUPA && len == 1) { // Received a WAKEUP
             p_response = &responses[ATQA];
-            order = ORDER_WUPA;
         } else if (receivedCmd[1] == 0x20 && receivedCmd[0] == ISO14443A_CMD_ANTICOLL_OR_SELECT && len == 2) {    // Received request for UID (cascade 1)
             p_response = &responses[UIDC1];
-            order = ORDER_SELECT_ALL_CL1;
         } else if (receivedCmd[1] == 0x20 && receivedCmd[0] == ISO14443A_CMD_ANTICOLL_OR_SELECT_2 && len == 2) {  // Received request for UID (cascade 2)
             p_response = &responses[UIDC2];
-            order = ORDER_SELECT_ALL_CL2;
         } else if (receivedCmd[1] == 0x70 && receivedCmd[0] == ISO14443A_CMD_ANTICOLL_OR_SELECT && len == 9) {    // Received a SELECT (cascade 1)
             p_response = &responses[SAKC1];
-            order = ORDER_SELECT_CL1;
         } else if (receivedCmd[1] == 0x70 && receivedCmd[0] == ISO14443A_CMD_ANTICOLL_OR_SELECT_2 && len == 9) {  // Received a SELECT (cascade 2)
             p_response = &responses[SAKC2];
-            order = ORDER_SELECT_CL2;
+        } else if (receivedCmd[0] == ISO14443A_CMD_PPS) {
+            p_response = &responses[PPS];
         } else if (receivedCmd[0] == ISO14443A_CMD_READBLOCK && len == 4) {    // Received a (plain) READ
             uint8_t block = receivedCmd[1];
             // if Ultralight or NTAG (4 byte blocks)
@@ -1365,8 +1429,6 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
                 emlGetMemBt(emdata, block, 16);
                 AddCrc14A(emdata, 16);
                 EmSendCmd(emdata, sizeof(emdata));
-                // EmSendCmd(data+(4*receivedCmd[1]),16);
-                // Dbprintf("Read request from reader: %x %x",receivedCmd[0],receivedCmd[1]);
                 // We already responded, do not send anything with the EmSendCmd14443aRaw() that is called below
                 p_response = NULL;
             }
@@ -1388,8 +1450,7 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
             p_response = NULL;
         } else if (receivedCmd[0] == MIFARE_ULC_WRITE && len == 8 && (tagType == 2 || tagType == 7)) {        // Received a WRITE
             // cmd + block + 4 bytes data + 2 bytes crc
-            bool isCrcCorrect = CheckCrc14A(receivedCmd, len);
-            if (isCrcCorrect) {
+            if (CheckCrc14A(receivedCmd, len)) {
                 uint8_t block = receivedCmd[1];
                 if (block > pages) {
                     // send NACK 0x0 == invalid argument
@@ -1407,8 +1468,7 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
             p_response = NULL;
         } else if (receivedCmd[0] == MIFARE_ULC_COMP_WRITE && len == 4 && (tagType == 2 || tagType == 7)) {
             // cmd + block + 2 bytes crc
-            bool isCrcCorrect = CheckCrc14A(receivedCmd, len);
-            if (isCrcCorrect) {
+            if (CheckCrc14A(receivedCmd, len)) {
                 wrblock = receivedCmd[1];
                 if (wrblock > pages) {
                     // send NACK 0x0 == invalid argument
@@ -1493,7 +1553,6 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
                 p_response = NULL;
             } else {
                 p_response = &responses[RATS];
-                order = ORDER_RATS;
             }
         } else if (receivedCmd[0] == MIFARE_ULC_AUTH_1) {  // ULC authentication, or Desfire Authentication
             LogTrace(receivedCmd, Uart.len, Uart.startTime * 16 - DELAY_AIR2ARM_AS_TAG, Uart.endTime * 16 - DELAY_AIR2ARM_AS_TAG, Uart.parity, true);
@@ -1521,73 +1580,103 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
             AddCrc14A(cmd, sizeof(cmd) - 2);
             EmSendCmd(cmd, sizeof(cmd));
             p_response = NULL;
+
         } else {
-            // Check for ISO 14443A-4 compliant commands, look at left nibble
-            switch (receivedCmd[0]) {
-                case 0x02:
-                case 0x03: {  // IBlock (command no CID)
+
+            // clear old dynamic responses
+            dynamic_response_info.response_n = 0;
+            dynamic_response_info.modulation_n = 0;
+
+            // ST25TA512B  IKEA Rothult
+            if (tagType == 10)  {
+                // we replay 90 00 for all commands but the read bin and we deny the verify cmd.
+
+                if (memcmp("\x02\xa2\xb0\x00\x00\x1d\x51\x69", receivedCmd, 8) == 0) {
+                    dynamic_response_info.response[0] = receivedCmd[0];
+                    memcpy(dynamic_response_info.response + 1, "\x00\x1b\xd1\x01\x17\x54\x02\x7a\x68\xa2\x34\xcb\xd0\xe2\x03\xc7\x3e\x62\x0b\xe8\xc6\x3c\x85\x2c\xc5\x31\x31\x31\x32\x90\x00", 31);
+                    dynamic_response_info.response_n = 32;
+                } else if (memcmp("\x02\x00\x20\x00\x01\x00\x6e\xa9", receivedCmd, 8) == 0) {
+                    dynamic_response_info.response[0] = receivedCmd[0];
+                    dynamic_response_info.response[1] = 0x63;
+                    dynamic_response_info.response[2] = 0x00;
+                    dynamic_response_info.response_n = 3;
+                } else {
                     dynamic_response_info.response[0] = receivedCmd[0];
                     dynamic_response_info.response[1] = 0x90;
                     dynamic_response_info.response[2] = 0x00;
                     dynamic_response_info.response_n = 3;
                 }
-                break;
-                case 0x0B:
-                case 0x0A: { // IBlock (command CID)
-                    dynamic_response_info.response[0] = receivedCmd[0];
-                    dynamic_response_info.response[1] = 0x00;
-                    dynamic_response_info.response[2] = 0x90;
-                    dynamic_response_info.response[3] = 0x00;
-                    dynamic_response_info.response_n = 4;
-                }
-                break;
+            } else {
 
-                case 0x1A:
-                case 0x1B: { // Chaining command
-                    dynamic_response_info.response[0] = 0xaa | ((receivedCmd[0]) & 1);
-                    dynamic_response_info.response_n = 2;
-                }
-                break;
-
-                case 0xAA:
-                case 0xBB: {
-                    dynamic_response_info.response[0] = receivedCmd[0] ^ 0x11;
-                    dynamic_response_info.response_n = 2;
-                }
-                break;
-
-                case 0xBA: { // ping / pong
-                    dynamic_response_info.response[0] = 0xAB;
-                    dynamic_response_info.response[1] = 0x00;
-                    dynamic_response_info.response_n = 2;
-                }
-                break;
-
-                case 0xCA:
-                case 0xC2: { // Readers sends deselect command
-                    dynamic_response_info.response[0] = 0xCA;
-                    dynamic_response_info.response[1] = 0x00;
-                    dynamic_response_info.response_n = 2;
-                }
-                break;
-
-                default: {
-                    // Never seen this command before
-                    LogTrace(receivedCmd, Uart.len, Uart.startTime * 16 - DELAY_AIR2ARM_AS_TAG, Uart.endTime * 16 - DELAY_AIR2ARM_AS_TAG, Uart.parity, true);
-                    if (DBGLEVEL >= DBG_DEBUG) {
-                        Dbprintf("Received unknown command (len=%d):", len);
-                        Dbhexdump(len, receivedCmd, false);
+                // Check for ISO 14443A-4 compliant commands, look at left nibble
+                switch (receivedCmd[0]) {
+                    case 0x02:
+                    case 0x03: {  // IBlock (command no CID)
+                        dynamic_response_info.response[0] = receivedCmd[0];
+                        dynamic_response_info.response[1] = 0x90;
+                        dynamic_response_info.response[2] = 0x00;
+                        dynamic_response_info.response_n = 3;
                     }
-                    // Do not respond
-                    dynamic_response_info.response_n = 0;
-                    order = ORDER_NONE; // back to work state
-                }
-                break;
-            }
+                    break;
+                    case 0x0B:
+                    case 0x0A: { // IBlock (command CID)
+                        dynamic_response_info.response[0] = receivedCmd[0];
+                        dynamic_response_info.response[1] = 0x00;
+                        dynamic_response_info.response[2] = 0x90;
+                        dynamic_response_info.response[3] = 0x00;
+                        dynamic_response_info.response_n = 4;
+                    }
+                    break;
 
+                    case 0x1A:
+                    case 0x1B: { // Chaining command
+                        dynamic_response_info.response[0] = 0xaa | ((receivedCmd[0]) & 1);
+                        dynamic_response_info.response_n = 2;
+                    }
+                    break;
+
+                    case 0xAA:
+                    case 0xBB: {
+                        dynamic_response_info.response[0] = receivedCmd[0] ^ 0x11;
+                        dynamic_response_info.response_n = 2;
+                    }
+                    break;
+
+                    case 0xBA: { // ping / pong
+                        dynamic_response_info.response[0] = 0xAB;
+                        dynamic_response_info.response[1] = 0x00;
+                        dynamic_response_info.response_n = 2;
+                    }
+                    break;
+
+                    case 0xCA:
+                    case 0xC2: { // Readers sends deselect command
+                        dynamic_response_info.response[0] = 0xCA;
+                        dynamic_response_info.response[1] = 0x00;
+                        dynamic_response_info.response_n = 2;
+                    }
+                    break;
+
+                    default: {
+                        // Never seen this command before
+                        LogTrace(receivedCmd, Uart.len, Uart.startTime * 16 - DELAY_AIR2ARM_AS_TAG, Uart.endTime * 16 - DELAY_AIR2ARM_AS_TAG, Uart.parity, true);
+                        if (DBGLEVEL >= DBG_DEBUG) {
+                            Dbprintf("Received unknown command (len=%d):", len);
+                            Dbhexdump(len, receivedCmd, false);
+                        }
+                        // Do not respond
+                        dynamic_response_info.response_n = 0;
+                        order = ORDER_NONE; // back to work state
+                    }
+                    break;
+                }
+
+            }
             if (dynamic_response_info.response_n > 0) {
+
                 // Copy the CID from the reader query
-                dynamic_response_info.response[1] = receivedCmd[1];
+                if (tagType != 10)
+                    dynamic_response_info.response[1] = receivedCmd[1];
 
                 // Add CRC bytes, always used in ISO 14443A-4 compliant cards
                 AddCrc14A(dynamic_response_info.response, dynamic_response_info.response_n);
@@ -1603,16 +1692,15 @@ void SimulateIso14443aTag(uint8_t tagType, uint8_t flags, uint8_t *data) {
         }
 
         // Count number of wakeups received after a halt
-        if (order == ORDER_WUPA && lastorder == ORDER_HALTED) { happened++; }
+//        if (order == ORDER_WUPA && lastorder == ORDER_HALTED) { happened++; }
 
         // Count number of other messages after a halt
-        if (order != ORDER_WUPA && lastorder == ORDER_HALTED) { happened2++; }
+//        if (order != ORDER_WUPA && lastorder == ORDER_HALTED) { happened2++; }
 
         cmdsRecvd++;
 
-        if (p_response != NULL) {
-            EmSendPrecompiledCmd(p_response);
-        }
+        // Send response
+        EmSendPrecompiledCmd(p_response);
     }
 
     switch_off();
@@ -1832,8 +1920,8 @@ int EmGetCmd(uint8_t *received, uint16_t *len, uint8_t *par) {
     for (;;) {
         WDT_HIT();
 
-        if (check == 1000) {
-            if (BUTTON_PRESS() || data_available())
+        if (check == 2000) {
+            if (BUTTON_PRESS())
                 return 1;
             check = 0;
         }
@@ -1913,7 +2001,7 @@ int EmSendCmd14443aRaw(uint8_t *resp, uint16_t respLen) {
     volatile uint8_t b;
     uint16_t i = 0;
     uint32_t ThisTransferTime;
-    bool correctionNeeded;
+    bool correction_needed;
 
     // Modulate Manchester
     FpgaWriteConfWord(FPGA_MAJOR_MODE_HF_ISO14443A | FPGA_HF_ISO14443A_TAGSIM_MOD);
@@ -1921,21 +2009,23 @@ int EmSendCmd14443aRaw(uint8_t *resp, uint16_t respLen) {
     // Include correction bit if necessary
     if (Uart.bitCount == 7) {
         // Short tags (7 bits) don't have parity, determine the correct value from MSB
-        correctionNeeded = Uart.output[0] & 0x40;
+        correction_needed = Uart.output[0] & 0x40;
     } else {
         // The parity bits are left-aligned
-        correctionNeeded = Uart.parity[(Uart.len - 1) / 8] & (0x80 >> ((Uart.len - 1) & 7));
+        correction_needed = Uart.parity[(Uart.len - 1) / 8] & (0x80 >> ((Uart.len - 1) & 7));
     }
     // 1236, so correction bit needed
-    i = (correctionNeeded) ? 0 : 1;
+    i = (correction_needed) ? 0 : 1;
 
     // clear receiving shift register and holding register
     while (!(AT91C_BASE_SSC->SSC_SR & AT91C_SSC_RXRDY));
     b = AT91C_BASE_SSC->SSC_RHR;
     (void) b;
-    while (!(AT91C_BASE_SSC->SSC_SR & AT91C_SSC_RXRDY));
-    b = AT91C_BASE_SSC->SSC_RHR;
-    (void) b;
+    /*
+        while (!(AT91C_BASE_SSC->SSC_SR & AT91C_SSC_TXRDY));
+        b = AT91C_BASE_SSC->SSC_THR;
+        (void) b;
+    */
 
     // wait for the FPGA to signal fdt_indicator == 1 (the FPGA is ready to queue new data in its delay line)
     for (uint8_t j = 0; j < 5; j++) {    // allow timeout - better late than never
@@ -1955,23 +2045,24 @@ int EmSendCmd14443aRaw(uint8_t *resp, uint16_t respLen) {
             FpgaSendQueueDelay = (uint8_t)AT91C_BASE_SSC->SSC_RHR;
         }
 
-        if (AT91C_BASE_SSC->SSC_SR & (AT91C_SSC_RXRDY)) {
-            b = (uint16_t)(AT91C_BASE_SSC->SSC_RHR);
-            (void)b;
-        }
-        if (BUTTON_PRESS()) break;
+        /*
+                if (AT91C_BASE_SSC->SSC_SR & (AT91C_SSC_RXRDY)) {
+                    b = (uint16_t)(AT91C_BASE_SSC->SSC_RHR);
+                    (void)b;
+                }
+                */
     }
 
     // Ensure that the FPGA Delay Queue is empty before we switch to TAGSIM_LISTEN again:
     uint8_t fpga_queued_bits = FpgaSendQueueDelay >> 3;
-    for (i = 0; i <= fpga_queued_bits / 8 + 1;) {
+    for (i = 0; i <= (fpga_queued_bits >> 3) + 1;) {
         if (AT91C_BASE_SSC->SSC_SR & (AT91C_SSC_TXRDY)) {
             AT91C_BASE_SSC->SSC_THR = SEC_F;
             FpgaSendQueueDelay = (uint8_t)AT91C_BASE_SSC->SSC_RHR;
             i++;
         }
     }
-    LastTimeProxToAirStart = ThisTransferTime + (correctionNeeded ? 8 : 0);
+    LastTimeProxToAirStart = ThisTransferTime + (correction_needed ? 8 : 0);
     return 0;
 }
 
@@ -2025,6 +2116,7 @@ int EmSendCmdEx(uint8_t *resp, uint16_t respLen, bool collision) {
 }
 
 int EmSendPrecompiledCmd(tag_response_info_t *p_response) {
+    if (p_response == NULL) return 0;
     int ret = EmSendCmd14443aRaw(p_response->modulation, p_response->modulation_n);
     // do the tracing for the previous reader request and this tag answer:
     uint8_t par[MAX_PARITY_SIZE] = {0x00};
@@ -2336,7 +2428,8 @@ int iso14443a_select_card(uint8_t *uid_ptr, iso14a_card_select_t *p_card, uint32
     uint8_t resp[MAX_FRAME_SIZE] = {0}; // theoretically. A usual RATS will be much smaller
     uint8_t resp_par[MAX_PARITY_SIZE] = {0};
 
-    uint8_t sak = 0x04; // cascade uid
+    uint8_t sak; // cascade uid
+    bool do_cascade = 1;
     int cascade_level = 0;
 
     if (p_card) {
@@ -2360,26 +2453,32 @@ int iso14443a_select_card(uint8_t *uid_ptr, iso14a_card_select_t *p_card, uint32
             memset(uid_ptr, 0, 10);
     }
 
-    // check for proprietary anticollision:
-    if ((resp[0] & 0x1F) == 0) return 3;
+    if (hf14aconfig.forceanticol == 0) {
+        // check for proprietary anticollision:
+        if ((resp[0] & 0x1F) == 0) return 3;
+    } else if (hf14aconfig.forceanticol == 2) {
+        return 3; // force skipping anticol
+    } // else force executing
 
     // OK we will select at least at cascade 1, lets see if first byte of UID was 0x88 in
     // which case we need to make a cascade 2 request and select - this is a long UID
     // While the UID is not complete, the 3nd bit (from the right) is set in the SAK.
-    for (; sak & 0x04; cascade_level++) {
+    for (; do_cascade; cascade_level++) {
         // SELECT_* (L1: 0x93, L2: 0x95, L3: 0x97)
         uint8_t sel_all[]    = { ISO14443A_CMD_ANTICOLL_OR_SELECT, 0x20 };
         uint8_t sel_uid[]    = { ISO14443A_CMD_ANTICOLL_OR_SELECT, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-        uint8_t uid_resp[4] = {0};
+        uint8_t uid_resp[5] = {0}; // UID + original BCC
         sel_uid[0] = sel_all[0] = 0x93 + cascade_level * 2;
 
         if (anticollision) {
             // SELECT_ALL
             ReaderTransmit(sel_all, sizeof(sel_all), NULL);
-            if (!ReaderReceive(resp, resp_par)) return 0;
-
+            if (!ReaderReceive(resp, resp_par)) {
+                Dbprintf("Card didn't answer to CL%i select all", cascade_level + 1);
+                return 0;
+            }
             if (Demod.collisionPos) {            // we had a collision and need to construct the UID bit by bit
-                memset(uid_resp, 0, 4);
+                memset(uid_resp, 0, 5);
                 uint16_t uid_resp_bits = 0;
                 uint16_t collision_answer_offset = 0;
                 // anti-collision-loop:
@@ -2391,7 +2490,7 @@ int iso14443a_select_card(uint8_t *uid_ptr, iso14a_card_select_t *p_card, uint32
                     }
                     uid_resp[uid_resp_bits / 8] |= 1 << (uid_resp_bits % 8);                  // next time select the card(s) with a 1 in the collision position
                     uid_resp_bits++;
-                    // construct anticollosion command:
+                    // construct anticollision command:
                     sel_uid[1] = ((2 + uid_resp_bits / 8) << 4) | (uid_resp_bits & 0x07);     // length of data in bytes and bits
                     for (uint16_t i = 0; i <= uid_resp_bits / 8; i++) {
                         sel_uid[2 + i] = uid_resp[i];
@@ -2407,7 +2506,7 @@ int iso14443a_select_card(uint8_t *uid_ptr, iso14a_card_select_t *p_card, uint32
                 }
 
             } else {        // no collision, use the response to SELECT_ALL as current uid
-                memcpy(uid_resp, resp, 4);
+                memcpy(uid_resp, resp, 5); // UID + original BCC
             }
 
         } else {
@@ -2426,18 +2525,51 @@ int iso14443a_select_card(uint8_t *uid_ptr, iso14a_card_select_t *p_card, uint32
 
         // Construct SELECT UID command
         sel_uid[1] = 0x70;                                              // transmitting a full UID (1 Byte cmd, 1 Byte NVB, 4 Byte UID, 1 Byte BCC, 2 Bytes CRC)
-        memcpy(sel_uid + 2, uid_resp, 4);                               // the UID received during anticollision, or the provided UID
-        sel_uid[6] = sel_uid[2] ^ sel_uid[3] ^ sel_uid[4] ^ sel_uid[5]; // calculate and add BCC
+
+        if (anticollision) {
+            memcpy(sel_uid + 2, uid_resp, 5);                               // the UID received during anticollision with original BCC
+            uint8_t bcc = sel_uid[2] ^ sel_uid[3] ^ sel_uid[4] ^ sel_uid[5]; // calculate BCC
+            if (sel_uid[6] != bcc) {
+                Dbprintf("BCC%d incorrect, got 0x%02x, expected 0x%02x", cascade_level, sel_uid[6], bcc);
+                if (hf14aconfig.forcebcc == 0) {
+                    Dbprintf("Aborting");
+                    return 0;
+                } else if (hf14aconfig.forcebcc == 1) {
+                    sel_uid[6] = bcc;
+                } // else use card BCC
+                Dbprintf("Using BCC%d=" _YELLOW_("0x%02x") " to perform anticollision", cascade_level, sel_uid[6]);
+            }
+        } else {
+            memcpy(sel_uid + 2, uid_resp, 4);                               // the provided UID
+            sel_uid[6] = sel_uid[2] ^ sel_uid[3] ^ sel_uid[4] ^ sel_uid[5]; // calculate and add BCC
+        }
+
         AddCrc14A(sel_uid, 7);                                          // calculate and add CRC
         ReaderTransmit(sel_uid, sizeof(sel_uid), NULL);
 
         // Receive the SAK
-        if (!ReaderReceive(resp, resp_par)) return 0;
-
+        if (!ReaderReceive(resp, resp_par)) {
+            Dbprintf("Card didn't answer to select");
+            return 0;
+        }
         sak = resp[0];
 
         // Test if more parts of the uid are coming
-        if ((sak & 0x04) /* && uid_resp[0] == 0x88 */) {
+        do_cascade = (((sak & 0x04) /* && uid_resp[0] == 0x88 */) > 0);
+        if (cascade_level == 0) {
+            if (hf14aconfig.forcecl2 == 2) {
+                do_cascade = false;
+            } else if (hf14aconfig.forcecl2 == 1) {
+                do_cascade = true;
+            } // else 0==auto
+        } else if (cascade_level == 1) {
+            if (hf14aconfig.forcecl3 == 2) {
+                do_cascade = false;
+            } else if (hf14aconfig.forcecl3 == 1) {
+                do_cascade = true;
+            } // else 0==auto
+        }
+        if (do_cascade) {
             // Remove first byte, 0x88 is not an UID byte, it CT, see page 3 of:
             // http://www.nxp.com/documents/application_note/AN10927.pdf
             uid_resp[0] = uid_resp[1];
@@ -2459,8 +2591,12 @@ int iso14443a_select_card(uint8_t *uid_ptr, iso14a_card_select_t *p_card, uint32
         p_card->sak = sak;
     }
 
-    // PICC compilant with iso14443a-4 ---> (SAK & 0x20 != 0)
-    if ((sak & 0x20) == 0) return 2;
+    if (hf14aconfig.forcerats == 0) {
+        // PICC compliant with iso14443a-4 ---> (SAK & 0x20 != 0)
+        if ((sak & 0x20) == 0) return 2;
+    } else if (hf14aconfig.forcerats == 2) {
+        return 2;
+    } // else force RATS
 
     // RATS, Request for answer to select
     if (!no_rats) {

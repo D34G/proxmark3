@@ -347,9 +347,9 @@ static char *getCardSizeStr(uint8_t fsize) {
 
     // is  LSB set?
     if (fsize & 1)
-        sprintf(retStr, "0x%02X (" _YELLOW_("%d - %d bytes") ")", fsize, usize, lsize);
+        snprintf(retStr, sizeof(buf), "0x%02X (" _YELLOW_("%d - %d bytes") ")", fsize, usize, lsize);
     else
-        sprintf(retStr, "0x%02X (" _YELLOW_("%d bytes") ")", fsize, lsize);
+        snprintf(retStr, sizeof(buf), "0x%02X (" _YELLOW_("%d bytes") ")", fsize, lsize);
     return buf;
 }
 
@@ -359,14 +359,14 @@ static char *getProtocolStr(uint8_t id, bool hw) {
     char *retStr = buf;
 
     if (id == 0x04) {
-        sprintf(retStr, "0x%02X (" _YELLOW_("ISO 14443-3 MIFARE, 14443-4") ")", id);
+        snprintf(retStr, sizeof(buf), "0x%02X (" _YELLOW_("ISO 14443-3 MIFARE, 14443-4") ")", id);
     } else if (id == 0x05) {
         if (hw)
-            sprintf(retStr, "0x%02X (" _YELLOW_("ISO 14443-2, 14443-3") ")", id);
+            snprintf(retStr, sizeof(buf), "0x%02X (" _YELLOW_("ISO 14443-2, 14443-3") ")", id);
         else
-            sprintf(retStr, "0x%02X (" _YELLOW_("ISO 14443-3, 14443-4") ")", id);
+            snprintf(retStr, sizeof(buf), "0x%02X (" _YELLOW_("ISO 14443-3, 14443-4") ")", id);
     } else {
-        sprintf(retStr, "0x%02X (" _YELLOW_("Unknown") ")", id);
+        snprintf(retStr, sizeof(buf), "0x%02X (" _YELLOW_("Unknown") ")", id);
     }
     return buf;
 }
@@ -377,17 +377,17 @@ static char *getVersionStr(uint8_t major, uint8_t minor) {
     char *retStr = buf;
 
     if (major == 0x00)
-        sprintf(retStr, "%x.%x (" _YELLOW_("DESFire MF3ICD40") ")", major, minor);
+        snprintf(retStr, sizeof(buf), "%x.%x (" _YELLOW_("DESFire MF3ICD40") ")", major, minor);
     else if (major == 0x01 && minor == 0x00)
-        sprintf(retStr, "%x.%x (" _YELLOW_("DESFire EV1") ")", major, minor);
+        snprintf(retStr, sizeof(buf), "%x.%x (" _YELLOW_("DESFire EV1") ")", major, minor);
     else if (major == 0x12 && minor == 0x00)
-        sprintf(retStr, "%x.%x (" _YELLOW_("DESFire EV2") ")", major, minor);
+        snprintf(retStr, sizeof(buf), "%x.%x (" _YELLOW_("DESFire EV2") ")", major, minor);
     else if (major == 0x33 && minor == 0x00)
-        sprintf(retStr, "%x.%x (" _YELLOW_("DESFire EV3") ")", major, minor);
+        snprintf(retStr, sizeof(buf), "%x.%x (" _YELLOW_("DESFire EV3") ")", major, minor);
     else if (major == 0x30 && minor == 0x00)
-        sprintf(retStr, "%x.%x (" _YELLOW_("DESFire Light") ")", major, minor);
+        snprintf(retStr, sizeof(buf), "%x.%x (" _YELLOW_("DESFire Light") ")", major, minor);
     else
-        sprintf(retStr, "%x.%x (" _YELLOW_("Unknown") ")", major, minor);
+        snprintf(retStr, sizeof(buf), "%x.%x (" _YELLOW_("Unknown") ")", major, minor);
     return buf;
 }
 
@@ -1152,7 +1152,7 @@ static int mifare_desfire_change_key(uint8_t key_no, uint8_t *new_key, uint8_t n
 }
 
 // --- GET SIGNATURE
-static int desfire_print_signature(uint8_t *uid, uint8_t *signature, size_t signature_len, nxp_cardtype_t card_type) {
+static int desfire_print_signature(uint8_t *uid, uint8_t uidlen, uint8_t *signature, size_t signature_len, nxp_cardtype_t card_type) {
     (void)card_type;
 
     if (uid == NULL) {
@@ -1185,7 +1185,7 @@ static int desfire_print_signature(uint8_t *uid, uint8_t *signature, size_t sign
         uint8_t key[PUBLIC_DESFIRE_ECDA_KEYLEN];
         param_gethex_to_eol(nxp_desfire_public_keys[i].value, 0, key, PUBLIC_DESFIRE_ECDA_KEYLEN, &dl);
 
-        int res = ecdsa_signature_r_s_verify(MBEDTLS_ECP_DP_SECP224R1, key, uid, 7, signature, signature_len, false);
+        int res = ecdsa_signature_r_s_verify(MBEDTLS_ECP_DP_SECP224R1, key, uid, uidlen, signature, signature_len, false);
         is_valid = (res == 0);
         if (is_valid)
             break;
@@ -3228,7 +3228,7 @@ static int CmdHF14ADesInfo(const char *Cmd) {
     SendCommandNG(CMD_HF_DESFIRE_INFO, NULL, 0);
     PacketResponseNG resp;
 
-    if (!WaitForResponseTimeout(CMD_HF_DESFIRE_INFO, &resp, 1500)) {
+    if (WaitForResponseTimeout(CMD_HF_DESFIRE_INFO, &resp, 1500) == false) {
         PrintAndLogEx(WARNING, "Command execute timeout");
         DropField();
         return PM3_ETIMEOUT;
@@ -3237,6 +3237,7 @@ static int CmdHF14ADesInfo(const char *Cmd) {
     struct p {
         uint8_t isOK;
         uint8_t uid[7];
+        uint8_t uidlen;
         uint8_t versionHW[7];
         uint8_t versionSW[7];
         uint8_t details[14];
@@ -3269,7 +3270,7 @@ static int CmdHF14ADesInfo(const char *Cmd) {
     PrintAndLogEx(NORMAL, "");
     PrintAndLogEx(INFO, "--- " _CYAN_("Tag Information") " ---------------------------");
     PrintAndLogEx(INFO, "-------------------------------------------------------------");
-    PrintAndLogEx(SUCCESS, "              UID: " _GREEN_("%s"), sprint_hex(package->uid, sizeof(package->uid)));
+    PrintAndLogEx(SUCCESS, "              UID: " _GREEN_("%s"), sprint_hex(package->uid, package->uidlen));
     PrintAndLogEx(SUCCESS, "     Batch number: " _GREEN_("%s"), sprint_hex(package->details + 7, 5));
     PrintAndLogEx(SUCCESS, "  Production date: week " _GREEN_("%02x") " / " _GREEN_("20%02x"), package->details[12], package->details[13]);
     PrintAndLogEx(NORMAL, "");
@@ -3319,7 +3320,7 @@ static int CmdHF14ADesInfo(const char *Cmd) {
         PrintAndLogEx(NORMAL, "");
         PrintAndLogEx(INFO, "--- " _CYAN_("Tag Signature"));
         if (handler_desfire_signature(signature, &signature_len) == PM3_SUCCESS) {
-            desfire_print_signature(package->uid, signature, signature_len, cardtype);
+            desfire_print_signature(package->uid, package->uidlen, signature, signature_len, cardtype);
         } else {
             PrintAndLogEx(WARNING, "--- Card doesn't support GetSignature cmd");
         }
@@ -3401,6 +3402,7 @@ static void DecodeComSet(uint8_t comset) {
 }
 
 static char *DecodeAccessValue(uint8_t value) {
+
     char *car = (char *)calloc(255, sizeof(char));
     if (car == NULL)
         return NULL;
@@ -3413,7 +3415,7 @@ static char *DecodeAccessValue(uint8_t value) {
             strcat(car, "(Denied Access)");
             break;
         default:
-            sprintf(car, "(Access Key: %d)", value);
+            snprintf(car, 255, "(Access Key: %d)", value);
             break;
     }
     return car;
@@ -4364,7 +4366,7 @@ static int CmdHF14aDesChk(const char *Cmd) {
     }
 
     if (!verbose)
-        printf("Search keys:\n");
+        PrintAndLogEx(INFO, "Search keys:");
 
     bool result = false;
     uint8_t app_ids[78] = {0};
@@ -4382,25 +4384,29 @@ static int CmdHF14aDesChk(const char *Cmd) {
     }
 
     for (uint32_t x = 0; x < app_ids_len / 3; x++) {
+
         uint32_t curaid = (app_ids[x * 3] & 0xFF) + ((app_ids[(x * 3) + 1] & 0xFF) << 8) + ((app_ids[(x * 3) + 2] & 0xFF) << 16);
         PrintAndLogEx(ERR, "Checking aid 0x%06X...", curaid);
+
         res = AuthCheckDesfire(&app_ids[x * 3], deskeyList, deskeyListLen, aeskeyList, aeskeyListLen, k3kkeyList, k3kkeyListLen, foundKeys, &result);
         if (res == PM3_EOPABORTED) {
             break;
         }
 
         if (pattern2b && startPattern < 0x10000) {
-            if (!verbose)
-                printf("p");
+            if (verbose == false)
+                PrintAndLogEx(NORMAL, "p" NOLF);
+
             aeskeyListLen = 0;
             deskeyListLen = 0;
             k3kkeyListLen = 0;
             DesFill2bPattern(deskeyList, &deskeyListLen, aeskeyList, &aeskeyListLen, k3kkeyList, &k3kkeyListLen, &startPattern);
             continue;
         }
+
         if (dict_filenamelen && endFilePosition) {
-            if (!verbose)
-                printf("d");
+            if (verbose == false)
+                PrintAndLogEx(NORMAL, "d" NOLF);
 
             uint32_t keycnt = 0;
             res = loadFileDICTIONARYEx((char *)dict_filename, deskeyList, sizeof(deskeyList), NULL, 16, &keycnt, endFilePosition, &endFilePosition, false);
@@ -4420,8 +4426,8 @@ static int CmdHF14aDesChk(const char *Cmd) {
             continue;
         }
     }
-    if (!verbose)
-        printf("\n");
+    if (verbose == false)
+        PrintAndLogEx(NORMAL, "");
 
     // save keys to json
     if ((jsonnamelen > 0) && result) {
